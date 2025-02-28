@@ -1,0 +1,258 @@
+Got it! I'll guide you **step by step**, assuming you **don’t have prerequisites** and ensuring **B and C can connect properly to A**.  
+
+We will **code everything from scratch**, explaining **each step clearly**.  
+
+---
+
+## **📌 Project Overview**
+We are building a **VoIP application** where:  
+✅ Users can **sign up, log in**, and upload a **profile picture**.  
+✅ **User data (contacts, login credentials) is stored in MongoDB**.  
+✅ Users can **see saved contacts** and initiate **audio calls**.  
+✅ When calling, the receiver gets an **incoming call notification** with the option to **accept/reject**.  
+✅ **WebRTC is used for real-time audio streaming**.  
+✅ **WebSocket (ws://) is used for signaling**.  
+
+---
+
+## **📂 Folder Structure**
+We will create the following folders:  
+
+```
+voip-app/
+│── backend/   (Node.js, Express, WebSocket, MongoDB)
+│── frontend/  (React, Next.js, WebRTC)
+```
+
+---
+
+# **Step 1: Setting Up the Backend (Server - Machine A)**
+This is the **heart of the application**.  
+We will create an **Express server** with:  
+✅ **User Authentication (Signup, Login, Profile Pictures)**  
+✅ **WebSocket Signaling for Calls**  
+✅ **MongoDB Database to Store Contacts**  
+
+---
+
+## **🛠️ 1.1 Install Dependencies**
+1️⃣ Open **Machine A’s terminal** and **create the backend folder**:  
+```bash
+mkdir voip-app && cd voip-app
+mkdir backend && cd backend
+```
+
+2️⃣ Initialize a Node.js project:  
+```bash
+npm init -y
+```
+
+3️⃣ Install required packages:  
+```bash
+npm install express socket.io mongoose cors dotenv multer bcrypt jsonwebtoken http
+```
+
+- `express` → Handles API requests (signup, login, etc.)  
+- `socket.io` → WebSocket for real-time call signaling  
+- `mongoose` → Connects to MongoDB  
+- `cors` → Allows frontend to communicate with backend  
+- `dotenv` → Manages environment variables  
+- `multer` → Handles profile picture uploads  
+- `bcrypt` → Encrypts passwords  
+- `jsonwebtoken` → Used for authentication  
+- `http` → Creates HTTP server  
+
+---
+
+## **📌 1.2 Create `server.js` (Main Backend File)**
+Now, create the **backend entry file**:  
+
+📄 `backend/server.js`
+```javascript
+require("dotenv").config();
+const express = require("express");
+const http = require("http");
+const cors = require("cors");
+const mongoose = require("mongoose");
+const socketIo = require("socket.io");
+const authRoutes = require("./routes/auth");
+const callRoutes = require("./routes/call");
+
+const app = express();
+const server = http.createServer(app);
+const io = socketIo(server, {
+  cors: { origin: "*" },
+});
+
+// Middleware
+app.use(express.json());
+app.use(cors());
+app.use("/uploads", express.static("uploads"));
+
+// Routes
+app.use("/api/auth", authRoutes);
+app.use("/api/call", callRoutes);
+
+// WebSocket Connection
+io.on("connection", (socket) => {
+  console.log("New client connected:", socket.id);
+
+  socket.on("callUser", ({ to, signalData, from }) => {
+    io.to(to).emit("incomingCall", { from, signalData });
+  });
+
+  socket.on("answerCall", ({ to, signal }) => {
+    io.to(to).emit("callAccepted", { signal });
+  });
+
+  socket.on("disconnect", () => {
+    console.log("Client disconnected");
+  });
+});
+
+// Connect to MongoDB
+mongoose.connect(process.env.MONGO_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+}).then(() => {
+  console.log("MongoDB Connected");
+}).catch(err => console.error(err));
+
+// Start Server
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+```
+
+---
+
+## **📌 1.3 Set Up Environment Variables**
+Create a `.env` file inside the **backend** folder:  
+
+📄 `backend/.env`
+```
+MONGO_URI=mongodb://localhost:27017/voip-app
+JWT_SECRET=supersecretkey
+```
+- **MONGO_URI** → MongoDB connection string  
+- **JWT_SECRET** → Used for authentication  
+
+---
+
+## **📌 1.4 Create MongoDB Models**
+Create a folder for models:  
+```bash
+mkdir backend/models
+```
+
+📄 `backend/models/User.js`
+```javascript
+const mongoose = require("mongoose");
+
+const UserSchema = new mongoose.Schema({
+  username: String,
+  email: String,
+  password: String,
+  profilePicture: String,
+  contacts: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+});
+
+module.exports = mongoose.model("User", UserSchema);
+```
+
+📄 `backend/models/Call.js`
+```javascript
+const mongoose = require("mongoose");
+
+const CallSchema = new mongoose.Schema({
+  caller: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  receiver: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  timestamp: Date,
+});
+
+module.exports = mongoose.model("Call", CallSchema);
+```
+
+---
+
+## **📌 1.5 Set Up Authentication Routes**
+Create a routes folder:  
+```bash
+mkdir backend/routes
+```
+
+📄 `backend/routes/auth.js`
+```javascript
+const express = require("express");
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
+const multer = require("multer");
+const User = require("../models/User");
+const router = express.Router();
+
+// Profile Picture Upload Setup
+const storage = multer.diskStorage({
+  destination: "./uploads/",
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + "-" + file.originalname);
+  },
+});
+const upload = multer({ storage });
+
+// User Signup
+router.post("/signup", upload.single("profilePicture"), async (req, res) => {
+  const { username, email, password } = req.body;
+  const hashedPassword = await bcrypt.hash(password, 10);
+
+  const newUser = new User({
+    username,
+    email,
+    password: hashedPassword,
+    profilePicture: req.file ? `/uploads/${req.file.filename}` : "",
+  });
+
+  await newUser.save();
+  res.json({ message: "User registered successfully" });
+});
+
+// User Login
+router.post("/login", async (req, res) => {
+  const { email, password } = req.body;
+  const user = await User.findOne({ email });
+
+  if (!user) return res.status(400).json({ message: "User not found" });
+
+  const isValid = await bcrypt.compare(password, user.password);
+  if (!isValid) return res.status(400).json({ message: "Invalid credentials" });
+
+  const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET);
+  res.json({ token, user });
+});
+
+module.exports = router;
+```
+
+---
+
+## **📌 1.6 Run the Backend**
+Now, start your backend server:  
+```bash
+node backend/server.js
+```
+If everything is correct, you should see:  
+```
+Server running on port 5000
+MongoDB Connected
+```
+
+---
+
+🚀 **At this point, we have set up the backend for user authentication and WebSocket signaling.**  
+💡 Next, we will create the **React frontend** for login, contacts, and calling.
+
+Should I continue with the **frontend now**?
+
+N: User/user vala kuch locha tha 
+N: sala galat folder banvaye
+
